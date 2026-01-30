@@ -1,5 +1,4 @@
 import { expect } from 'chai';
-import {find} from 'src/polyfill.js';
 import { spec } from 'modules/mediakeysBidAdapter.js';
 import { newBidder } from 'src/adapters/bidderFactory.js';
 import * as utils from 'src/utils.js';
@@ -131,7 +130,11 @@ describe('mediakeysBidAdapter', function () {
 
   const bidderRequest = {
     bidderCode: 'mediakeys',
-    auctionId: '84212956-c377-40e8-b000-9885a06dc692',
+    ortb2: {
+      source: {
+        tid: '84212956-c377-40e8-b000-9885a06dc692',
+      }
+    },
     bidderRequestId: '1c1b642f803242',
     bids: [
       bid
@@ -208,7 +211,7 @@ describe('mediakeysBidAdapter', function () {
       // openRTB 2.5
       expect(data.at).to.equal(1);
       expect(data.cur[0]).to.equal('USD'); // default currency
-      expect(data.source.tid).to.equal(bidderRequest.auctionId);
+      expect(data.source.tid).to.equal(bidderRequest.ortb2.source.tid);
 
       expect(data.imp.length).to.equal(1);
       expect(data.imp[0].id).to.equal(bidRequests[0].bidId);
@@ -243,7 +246,7 @@ describe('mediakeysBidAdapter', function () {
         expect(data.imp[0].native.request.plcmttype).to.equal(1);
         expect(data.imp[0].native.request.assets.length).to.equal(6);
         // find the asset body
-        const bodyAsset = find(data.imp[0].native.request.assets, asset => asset.id === 6);
+        const bodyAsset = data.imp[0].native.request.assets.find(asset => asset.id === 6);
         expect(bodyAsset.data.type).to.equal(2);
       });
 
@@ -448,7 +451,10 @@ describe('mediakeysBidAdapter', function () {
         ],
       };
       const bidRequests = [utils.deepClone(bid)];
-      bidRequests[0].schain = schain;
+      bidRequests[0].ortb2 = bidRequests[0].ortb2 || {};
+      bidRequests[0].ortb2.source = bidRequests[0].ortb2.source || {};
+      bidRequests[0].ortb2.source.ext = bidRequests[0].ortb2.source.ext || {};
+      bidRequests[0].ortb2.source.ext.schain = schain;
       const request = spec.buildRequests(bidRequests, bidderRequest);
       const data = request.data;
       expect(data.source.ext.schain).to.equal(schain);
@@ -601,33 +607,29 @@ describe('mediakeysBidAdapter', function () {
     });
 
     describe('should support userId modules', function() {
-      const userId = {
-        pubcid: '01EAJWWNEPN3CYMM5N8M5VXY22',
-        unsuported: '666'
-      };
+      const userIdAsEids = [{
+        source: 'pubcid.org',
+        uids: [
+          {
+            atype: 1,
+            id: '01EAJWWNEPN3CYMM5N8M5VXY22'
+          }
+        ]
+      }];
 
       it('should send "user.eids" in the request for Prebid.js supported modules only', function() {
         const bidCopy = utils.deepClone(bid);
-        bidCopy.userId = userId;
+        bidCopy.userIdAsEids = userIdAsEids;
 
         const bidderRequestCopy = utils.deepClone(bidderRequest);
-        bidderRequestCopy.bids[0].userId = userId;
+        bidderRequestCopy.bids[0].userIdAsEids = userIdAsEids;
 
         const bidRequests = [utils.deepClone(bidCopy)];
         const request = spec.buildRequests(bidRequests, bidderRequestCopy);
         const data = request.data;
 
-        const expected = [{
-          source: 'pubcid.org',
-          uids: [
-            {
-              atype: 1,
-              id: '01EAJWWNEPN3CYMM5N8M5VXY22'
-            }
-          ]
-        }];
+        const expected = userIdAsEids;
         expect(data.user.ext).to.exist;
-        expect(data.user.ext.eids).to.have.lengthOf(1);
         expect(data.user.ext.eids).to.deep.equal(expected);
       });
     });
@@ -688,15 +690,6 @@ describe('mediakeysBidAdapter', function () {
       expect(response04.length).to.equal(0);
       expect(response05.length).to.equal(0);
       expect(response06.length).to.equal(0);
-    });
-
-    it('Log an error', function () {
-      const bidRequests = [utils.deepClone(bid)];
-      const request = spec.buildRequests(bidRequests, bidderRequest);
-      sinon.stub(utils, 'isArray').throws();
-      utilsMock.expects('logError').once();
-      spec.interpretResponse(rawServerResponse, request);
-      utils.isArray.restore();
     });
 
     it('Meta Primary category handling', function() {

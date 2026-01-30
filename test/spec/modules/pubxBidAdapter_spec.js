@@ -26,10 +26,10 @@ describe('pubxAdapter', function () {
     });
 
     it('should return false when required params are not passed', function () {
-      let bid = Object.assign({}, bid);
-      delete bid.params;
-      bid.params = {};
-      expect(spec.isBidRequestValid(bid)).to.equal(false);
+      const invalidBid = Object.assign({}, bid);
+      delete invalidBid.params;
+      invalidBid.params = {};
+      expect(spec.isBidRequestValid(invalidBid)).to.equal(false);
     });
   });
 
@@ -39,14 +39,22 @@ describe('pubxAdapter', function () {
         id: '26c1ee0038ac11',
         params: {
           sid: '12345abc'
+        },
+        ortb2: {
+          site: {
+            page: `${location.href}?test=1`
+          }
         }
       }
     ];
 
     const data = {
       banner: {
-        sid: '12345abc'
-      }
+        sid: '12345abc',
+        pu: encodeURIComponent(
+          utils.deepAccess(bidRequests[0], 'ortb2.site.page').replace(/\?.*$/, '')
+        ),
+      },
     };
 
     it('sends bid request to ENDPOINT via GET', function () {
@@ -62,7 +70,7 @@ describe('pubxAdapter', function () {
   });
 
   describe('getUserSyncs', function () {
-    const sandbox = sinon.sandbox.create();
+    const sandbox = sinon.createSandbox();
 
     const keywordsText = 'meta1,meta2,meta3,meta4,meta5';
     const descriptionText = 'description1description2description3description4description5description';

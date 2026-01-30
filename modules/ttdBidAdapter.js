@@ -1,13 +1,25 @@
 import * as utils from '../src/utils.js';
 import { config } from '../src/config.js';
-import { createEidsArray } from './userId/eids.js';
 import { registerBidder } from '../src/adapters/bidderFactory.js';
 import { BANNER, VIDEO } from '../src/mediaTypes.js';
+import { isNumber } from '../src/utils.js';
+import { getDNT } from '../libraries/dnt/index.js';
+import { getConnectionType } from '../libraries/connectionInfo/connectionUtils.js'
 
-const BIDADAPTERVERSION = 'TTD-PREBID-2022.06.28';
+/**
+ * @typedef {import('../src/adapters/bidderFactory.js').BidRequest} BidRequest
+ * @typedef {import('../src/adapters/bidderFactory.js').Bid} Bid
+ * @typedef {import('../src/adapters/bidderFactory.js').ServerResponse} ServerResponse
+ * @typedef {import('../src/adapters/bidderFactory.js').ServerRequest} ServerRequest
+ * @typedef {import('../src/adapters/bidderFactory.js').SyncOptions} SyncOptions
+ * @typedef {import('../src/adapters/bidderFactory.js').UserSync} UserSync
+ */
+
+const BIDADAPTERVERSION = 'TTD-PREBID-2025.07.15';
 const BIDDER_CODE = 'ttd';
 const BIDDER_CODE_LONG = 'thetradedesk';
 const BIDDER_ENDPOINT = 'https://direct.adsrvr.org/bid/bidder/';
+const BIDDER_ENDPOINT_HTTP2 = 'https://d2.adsrvr.org/bid/bidder/';
 const USER_SYNC_ENDPOINT = 'https://match.adsrvr.org';
 
 const MEDIA_TYPE = {
@@ -27,7 +39,7 @@ function getExt(firstPartyData) {
 }
 
 function getRegs(bidderRequest) {
-  let regs = {};
+  const regs = {};
 
   if (bidderRequest.gdprConsent && typeof bidderRequest.gdprConsent.gdprApplies === 'boolean') {
     utils.deepSetValue(regs, 'ext.gdpr', bidderRequest.gdprConsent.gdprApplies ? 1 : 0);
@@ -46,11 +58,16 @@ function getRegs(bidderRequest) {
 }
 
 function getBidFloor(bid) {
+  // value from params takes precedance over value set by Floor Module
+  if (bid.params.bidfloor) {
+    return bid.params.bidfloor;
+  }
+
   if (!utils.isFn(bid.getFloor)) {
     return null;
   }
 
-  let floor = bid.getFloor({
+  const floor = bid.getFloor({
     currency: 'USD',
     mediaType: '*',
     size: '*'
@@ -61,77 +78,44 @@ function getBidFloor(bid) {
   return null;
 }
 
-function getSource(validBidRequests) {
-  let source = {
-    tid: validBidRequests[0].auctionId
+function getSource(validBidRequests, bidderRequest) {
+  const source = {
+    tid: bidderRequest?.ortb2?.source?.tid,
   };
-  if (validBidRequests[0].schain) {
-    utils.deepSetValue(source, 'ext.schain', validBidRequests[0].schain);
+  const schain = validBidRequests[0]?.ortb2?.source?.ext?.schain;
+  if (schain) {
+    utils.deepSetValue(source, 'ext.schain', schain);
   }
   return source;
 }
 
-function getDevice() {
+function getDevice(firstPartyData) {
   const language = navigator.language || navigator.browserLanguage || navigator.userLanguage || navigator.systemLanguage;
-  let device = {
+  const device = {
     ua: navigator.userAgent,
-    dnt: utils.getDNT() ? 1 : 0,
+    dnt: getDNT() ? 1 : 0,
     language: language,
     connectiontype: getConnectionType()
   };
 
+  utils.mergeDeep(device, firstPartyData.device)
+
   return device;
 };
 
-function getConnectionType() {
-  const connection = navigator.connection || navigator.webkitConnection;
-  if (!connection) {
-    return 0;
-  }
-  switch (connection.type) {
-    case 'ethernet':
-      return 1;
-    case 'wifi':
-      return 2;
-    case 'cellular':
-      switch (connection.effectiveType) {
-        case 'slow-2g':
-        case '2g':
-          return 4;
-        case '3g':
-          return 5;
-        case '4g':
-          return 6;
-        default:
-          return 3;
-      }
-    default:
-      return 0;
-  }
-}
-
-function getUser(bidderRequest) {
-  let user = {};
+function getUser(bidderRequest, firstPartyData) {
+  const user = {};
   if (bidderRequest.gdprConsent) {
     utils.deepSetValue(user, 'ext.consent', bidderRequest.gdprConsent.consentString);
   }
 
-  if (utils.isStr(utils.deepAccess(bidderRequest, 'bids.0.userId.tdid'))) {
-    user.buyeruid = bidderRequest.bids[0].userId.tdid;
-  }
-
-  var eids = createEidsArray(utils.deepAccess(bidderRequest, 'bids.0.userId'))
-  if (eids.length) {
+  var eids = utils.deepAccess(bidderRequest, 'bids.0.userIdAsEids')
+  if (eids && eids.length) {
     utils.deepSetValue(user, 'ext.eids', eids);
   }
 
-  // gather user.data
-  const ortb2UserData = utils.deepAccess(bidderRequest, 'ortb2.user.data');
-  if (ortb2UserData && ortb2UserData.length) {
-    user = utils.mergeDeep(user, {
-      data: [...ortb2UserData]
-    });
-  };
+  utils.mergeDeep(user, firstPartyData.user)
+
   return user;
 }
 
@@ -154,41 +138,40 @@ function getSite(bidderRequest, firstPartyData) {
 }
 
 function getImpression(bidRequest) {
-  let impression = {
+  const impression = {
     id: bidRequest.bidId
   };
 
   const gpid = utils.deepAccess(bidRequest, 'ortb2Imp.ext.gpid');
-  const tid = utils.deepAccess(bidRequest, 'ortb2Imp.ext.tid');
-  if (gpid || tid) {
-    impression.ext = {}
-    if (gpid) { impression.ext.gpid = gpid }
-    if (tid) { impression.ext.tid = tid }
-  }
-
   const tagid = gpid || bidRequest.params.placementId;
   if (tagid) {
-    impression.tagid = tagid
+    impression.tagid = tagid;
   }
 
   const mediaTypesVideo = utils.deepAccess(bidRequest, 'mediaTypes.video');
   const mediaTypesBanner = utils.deepAccess(bidRequest, 'mediaTypes.banner');
 
-  let mediaTypes = {};
+  const mediaTypes = {};
   if (mediaTypesBanner) {
     mediaTypes[BANNER] = banner(bidRequest);
   }
-  if (mediaTypesVideo) {
+  if (FEATURES.VIDEO && mediaTypesVideo) {
     mediaTypes[VIDEO] = video(bidRequest);
   }
 
   Object.assign(impression, mediaTypes);
 
-  let bidfloor = getBidFloor(bidRequest);
+  const bidfloor = getBidFloor(bidRequest);
   if (bidfloor) {
     impression.bidfloor = parseFloat(bidfloor);
     impression.bidfloorcur = 'USD';
   }
+
+  const secure = utils.deepAccess(bidRequest, 'ortb2Imp.secure');
+  impression.secure = isNumber(secure) ? secure : 1
+
+  const {video: _, ...ortb2ImpWithoutVideo} = bidRequest.ortb2Imp; // if enabled, video is already assigned above
+  utils.mergeDeep(impression, ortb2ImpWithoutVideo)
 
   return impression;
 }
@@ -216,7 +199,7 @@ function banner(bid) {
   });
   const pos = parseInt(utils.deepAccess(bid, 'mediaTypes.banner.pos'));
   const expdir = utils.deepAccess(bid, 'params.banner.expdir');
-  let optionalParams = {};
+  const optionalParams = {};
   if (pos) {
     optionalParams.pos = pos;
   }
@@ -232,7 +215,7 @@ function banner(bid) {
     },
     optionalParams);
 
-  const battr = utils.deepAccess(bid, 'ortb2Imp.battr');
+  const battr = utils.deepAccess(bid, 'ortb2Imp.banner.battr');
   if (battr) {
     banner.battr = battr;
   }
@@ -241,75 +224,69 @@ function banner(bid) {
 }
 
 function video(bid) {
-  let minduration = utils.deepAccess(bid, 'mediaTypes.video.minduration');
-  const maxduration = utils.deepAccess(bid, 'mediaTypes.video.maxduration');
-  const playerSize = utils.deepAccess(bid, 'mediaTypes.video.playerSize');
-  const api = utils.deepAccess(bid, 'mediaTypes.video.api');
-  const mimes = utils.deepAccess(bid, 'mediaTypes.video.mimes');
-  const placement = utils.deepAccess(bid, 'mediaTypes.video.placement');
-  const protocols = utils.deepAccess(bid, 'mediaTypes.video.protocols');
-  const playbackmethod = utils.deepAccess(bid, 'mediaTypes.video.playbackmethod');
-  const pos = utils.deepAccess(bid, 'mediaTypes.video.pos');
-  const startdelay = utils.deepAccess(bid, 'mediaTypes.video.startdelay');
-  const skip = utils.deepAccess(bid, 'mediaTypes.video.skip');
-  const skipmin = utils.deepAccess(bid, 'mediaTypes.video.skipmin');
-  const skipafter = utils.deepAccess(bid, 'mediaTypes.video.skipafter');
-  const minbitrate = utils.deepAccess(bid, 'mediaTypes.video.minbitrate');
-  const maxbitrate = utils.deepAccess(bid, 'mediaTypes.video.maxbitrate');
+  if (FEATURES.VIDEO) {
+    const v = bid?.mediaTypes?.video;
+    if (!v) return;
 
-  if (!minduration || !utils.isInteger(minduration)) {
-    minduration = 0;
-  }
-  let video = {
-    minduration: minduration,
-    maxduration: maxduration,
-    api: api,
-    mimes: mimes,
-    placement: placement,
-    protocols: protocols
-  };
+    const {
+      minduration = 0,
+      maxduration,
+      playerSize,
+      api,
+      mimes,
+      placement,
+      plcmt,
+      protocols,
+      playbackmethod,
+      pos,
+      startdelay,
+      skip,
+      skipmin,
+      skipafter,
+      minbitrate,
+      maxbitrate
+    } = v;
 
-  if (typeof playerSize !== 'undefined') {
-    if (utils.isArray(playerSize[0])) {
-      video.w = parseInt(playerSize[0][0]);
-      video.h = parseInt(playerSize[0][1]);
-    } else if (utils.isNumber(playerSize[0])) {
-      video.w = parseInt(playerSize[0]);
-      video.h = parseInt(playerSize[1]);
+    const video = {
+      minduration,
+      ...(maxduration !== undefined && { maxduration }),
+      ...(api && { api }),
+      ...(mimes && { mimes }),
+      ...(placement !== undefined && { placement }),
+      ...(plcmt !== undefined && { plcmt }),
+      ...(protocols && { protocols }),
+      ...(playbackmethod !== undefined && { playbackmethod }),
+      ...(pos !== undefined && { pos }),
+      ...(startdelay !== undefined && { startdelay }),
+      ...(skip !== undefined && { skip }),
+      ...(skipmin !== undefined && { skipmin }),
+      ...(skipafter !== undefined && { skipafter }),
+      ...(minbitrate !== undefined && { minbitrate }),
+      ...(maxbitrate !== undefined && { maxbitrate })
+    };
+
+    if (playerSize) {
+      const [w, h] = Array.isArray(playerSize[0]) ? playerSize[0] : playerSize;
+      video.w = Number(w);
+      video.h = Number(h);
     }
+
+    const battr = bid?.ortb2Imp?.video?.battr;
+    if (battr) video.battr = battr;
+
+    return video;
+  }
+}
+
+function selectEndpoint(params) {
+  if (params.customBidderEndpoint) {
+    return params.customBidderEndpoint
   }
 
-  if (playbackmethod) {
-    video.playbackmethod = playbackmethod;
+  if (params.useHttp2) {
+    return BIDDER_ENDPOINT_HTTP2;
   }
-  if (pos) {
-    video.pos = pos;
-  }
-  if (startdelay && utils.isInteger(startdelay)) {
-    video.startdelay = startdelay;
-  }
-  if (skip && (skip === 0 || skip === 1)) {
-    video.skip = skip;
-  }
-  if (skipmin && utils.isInteger(skipmin)) {
-    video.skipmin = skipmin;
-  }
-  if (skipafter && utils.isInteger(skipafter)) {
-    video.skipafter = skipafter;
-  }
-  if (minbitrate && utils.isInteger(minbitrate)) {
-    video.minbitrate = minbitrate;
-  }
-  if (maxbitrate && utils.isInteger(maxbitrate)) {
-    video.maxbitrate = maxbitrate;
-  }
-
-  const battr = utils.deepAccess(bid, 'ortb2Imp.battr');
-  if (battr) {
-    video.battr = battr;
-  }
-
-  return video;
+  return BIDDER_ENDPOINT;
 }
 
 export const spec = {
@@ -344,14 +321,25 @@ export const spec = {
       utils.logWarn(BIDDER_CODE + ': Missing required parameter params.publisherId');
       return false;
     }
-    if (bid.params.publisherId.length > 32) {
-      utils.logWarn(BIDDER_CODE + ': params.publisherId must be 32 characters or less');
+    if (bid.params.publisherId.length > 64) {
+      utils.logWarn(BIDDER_CODE + ': params.publisherId must be 64 characters or less');
+      return false;
+    }
+
+    // optional parameters
+    if (bid.params.bidfloor && isNaN(parseFloat(bid.params.bidfloor))) {
       return false;
     }
 
     const gpid = utils.deepAccess(bid, 'ortb2Imp.ext.gpid');
     if (!bid.params.placementId && !gpid) {
       utils.logWarn(BIDDER_CODE + ': one of params.placementId or gpid (via the GPT module https://docs.prebid.org/dev-docs/modules/gpt-pre-auction.html) must be passed');
+      return false;
+    }
+
+    if (bid.params.customBidderEndpoint &&
+        (!bid.params.customBidderEndpoint.startsWith('https://') || !bid.params.customBidderEndpoint.endsWith('/bid/bidder/'))) {
+      utils.logWarn(BIDDER_CODE + ': if params.customBidderEndpoint is provided, it must start with https:// and end with /bid/bidder/');
       return false;
     }
 
@@ -363,7 +351,7 @@ export const spec = {
       return false;
     }
 
-    if (mediaTypesVideo) {
+    if (FEATURES.VIDEO && mediaTypesVideo) {
       if (!mediaTypesVideo.maxduration || !utils.isInteger(mediaTypesVideo.maxduration)) {
         utils.logWarn(BIDDER_CODE + ': mediaTypes.video.maxduration must be set to the maximum video ad duration in seconds');
         return false;
@@ -388,22 +376,24 @@ export const spec = {
   /**
    * Make a server request from the list of BidRequests.
    *
-   * @param {BidRequest[]} an array of validBidRequests
-   * @param {*} bidderRequest
-   * @return {ServerRequest} Info describing the request to the server.
+   * @param {BidRequest[]} validBidRequests - An array of valid bid requests
+   * @param {*} bidderRequest - The current bidder request object
+   * @returns {ServerRequest} - Info describing the request to the server
    */
   buildRequests: function (validBidRequests, bidderRequest) {
     const firstPartyData = bidderRequest.ortb2 || {};
-    let topLevel = {
-      id: bidderRequest.auctionId,
+    const firstPartyImpData = bidderRequest.ortb2Imp || {};
+    const topLevel = {
+      id: bidderRequest.bidderRequestId,
       imp: validBidRequests.map(bidRequest => getImpression(bidRequest)),
       site: getSite(bidderRequest, firstPartyData),
-      device: getDevice(),
-      user: getUser(bidderRequest),
+      device: getDevice(firstPartyData),
+      user: getUser(bidderRequest, firstPartyData),
       at: 1,
+      tmax: Math.max(bidderRequest.timeout || 400, 400),
       cur: ['USD'],
       regs: getRegs(bidderRequest),
-      source: getSource(validBidRequests),
+      source: getSource(validBidRequests, bidderRequest),
       ext: getExt(firstPartyData)
     }
 
@@ -415,14 +405,29 @@ export const spec = {
       topLevel.badv = firstPartyData.badv;
     }
 
-    let url = BIDDER_ENDPOINT + bidderRequest.bids[0].params.supplySourceId;
+    if (firstPartyData && firstPartyData.app) {
+      topLevel.app = firstPartyData.app;
+    }
 
-    let serverRequest = {
+    if ((firstPartyData && firstPartyData.pmp) || (firstPartyImpData && firstPartyImpData.pmp)) {
+      topLevel.imp.forEach(imp => {
+        imp.pmp = utils.mergeDeep(
+          {},
+          imp.pmp || {},
+          firstPartyData?.pmp || {},
+          firstPartyImpData?.pmp || {}
+        );
+      });
+    }
+
+    const url = selectEndpoint(bidderRequest.bids[0].params) + bidderRequest.bids[0].params.supplySourceId;
+
+    const serverRequest = {
       method: 'POST',
       url: url,
       data: topLevel,
       options: {
-        withCredentials: true
+        withCredentials: true,
       }
     };
 
@@ -447,25 +452,25 @@ export const spec = {
    * - vastXml
    * - dealId
    *
-   * @param {ttdResponseObj} bidResponse A successful response from ttd.
+   * @param {Object} response A successful response from ttd.
    * @param {ServerRequest} serverRequest The result of buildRequests() that lead to this response.
    * @return {Bid[]} An array of formatted bids.
-  */
+   */
   interpretResponse: function (response, serverRequest) {
-    let seatBidsInResponse = utils.deepAccess(response, 'body.seatbid');
+    const seatBidsInResponse = utils.deepAccess(response, 'body.seatbid');
     const currency = utils.deepAccess(response, 'body.cur');
     if (!seatBidsInResponse || seatBidsInResponse.length === 0) {
       return [];
     }
-    let bidResponses = [];
-    let requestedImpressions = utils.deepAccess(serverRequest, 'data.imp');
+    const bidResponses = [];
+    const requestedImpressions = utils.deepAccess(serverRequest, 'data.imp');
 
     seatBidsInResponse.forEach(seatBid => {
       seatBid.bid.forEach(bid => {
-        let matchingRequestedImpression = requestedImpressions.find(imp => imp.id === bid.impid);
+        const matchingRequestedImpression = requestedImpressions.find(imp => imp.id === bid.impid);
 
         const cpm = bid.price || 0;
-        let bidResponse = {
+        const bidResponse = {
           requestId: bid.impid,
           cpm: cpm,
           creativeId: bid.crid,
@@ -490,7 +495,7 @@ export const spec = {
               mediaType: BANNER
             }
           );
-        } else if (bid.ext.mediatype === MEDIA_TYPE.VIDEO) {
+        } else if (FEATURES.VIDEO && bid.ext.mediatype === MEDIA_TYPE.VIDEO) {
           Object.assign(
             bidResponse,
             {
@@ -525,9 +530,9 @@ export const spec = {
   getUserSyncs: function(syncOptions, serverResponses, gdprConsent = {}, uspConsent = '') {
     const syncs = [];
 
-    let gdprParams = `&gdpr=${gdprConsent.gdprApplies ? 1 : 0}&gdpr_consent=${encodeURIComponent(gdprConsent.consentString)}`;
+    const gdprParams = `&gdpr=${gdprConsent.gdprApplies ? 1 : 0}&gdpr_consent=${encodeURIComponent(gdprConsent.consentString)}`;
 
-    let url = `${USER_SYNC_ENDPOINT}/track/usersync?us_privacy=${encodeURIComponent(uspConsent)}${gdprParams}`;
+    const url = `${USER_SYNC_ENDPOINT}/track/usersync?us_privacy=${encodeURIComponent(uspConsent)}${gdprParams}`;
 
     if (syncOptions.pixelEnabled) {
       syncs.push({

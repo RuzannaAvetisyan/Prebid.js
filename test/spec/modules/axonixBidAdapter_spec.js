@@ -125,7 +125,7 @@ describe('AxonixBidAdapter', function () {
   });
 
   describe('isBidRequestValid', function () {
-    let validBids = [
+    const validBids = [
       {
         bidder: 'axonix',
         params: {
@@ -145,7 +145,7 @@ describe('AxonixBidAdapter', function () {
       },
     ];
 
-    let invalidBids = [
+    const invalidBids = [
       {
         bidder: 'axonix',
         params: {},
@@ -156,13 +156,13 @@ describe('AxonixBidAdapter', function () {
     ];
 
     it('should accept valid bids', function () {
-      for (let bid of validBids) {
+      for (const bid of validBids) {
         expect(spec.isBidRequestValid(bid)).to.equal(true);
       }
     });
 
     it('should reject invalid bids', function () {
-      for (let bid of invalidBids) {
+      for (const bid of invalidBids) {
         expect(spec.isBidRequestValid(bid)).to.equal(false);
       }
     });
@@ -286,26 +286,6 @@ describe('AxonixBidAdapter', function () {
     });
   });
 
-  describe.skip('buildRequests: can handle native ad requests', function () {
-    it('creates ServerRequests pointing to the correct region and endpoint if it changes', function () {
-      // loop:
-      //   set supply id
-      //   set region/endpoint in ssp config
-      //   call buildRequests, validate request (url, method, supply id)
-      expect.fail('Not implemented');
-    });
-
-    it('creates ServerRequests pointing to default endpoint if missing', function () {
-      // no endpoint in config means default value openrtb.axonix.com
-      expect.fail('Not implemented');
-    });
-
-    it('creates ServerRequests pointing to default region if missing', function () {
-      // no region in config means default value us-east-1
-      expect.fail('Not implemented');
-    });
-  });
-
   describe('interpretResponse', function () {
     it('considers corner cases', function() {
       expect(spec.interpretResponse(null)).to.be.an('array').that.is.empty;
@@ -330,13 +310,6 @@ describe('AxonixBidAdapter', function () {
 
       expect(response).to.be.an('array').that.is.not.empty;
       expect(response[0]).to.equal(VIDEO_RESPONSE.body[0]);
-    });
-
-    it.skip('parses 1 native responses', function () {
-      // passing 1 valid native in a response generates an array with 1 correct prebid response
-      // examine mediaType:native, native element
-      // check nativeBidIsValid from {@link file://./../../../src/native.js}
-      expect.fail('Not implemented');
     });
   });
 

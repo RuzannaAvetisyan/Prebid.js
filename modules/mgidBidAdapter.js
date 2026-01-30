@@ -1,14 +1,41 @@
-import { _each, deepAccess, isPlainObject, isArray, isStr, logInfo, parseUrl, isEmpty, triggerPixel, logWarn, getBidIdParameter, isFn, isNumber } from '../src/utils.js';
+import {getDNT} from '../libraries/dnt/index.js';
+import {
+  _each,
+  deepAccess,
+  isPlainObject,
+  isArray,
+  isStr,
+  logInfo,
+  parseUrl,
+  isEmpty,
+  triggerPixel,
+  triggerNurlWithCpm,
+  logWarn,
+  isFn,
+  isNumber,
+  isBoolean,
+  extractDomainFromHost,
+  isInteger, deepSetValue, getBidIdParameter, setOnAny,
+  getWinDimensions
+} from '../src/utils.js';
 import {registerBidder} from '../src/adapters/bidderFactory.js';
 import {BANNER, NATIVE} from '../src/mediaTypes.js';
 import {config} from '../src/config.js';
 import { getStorageManager } from '../src/storageManager.js';
 import { convertOrtbRequestToProprietaryNative } from '../src/native.js';
+import { getUserSyncs } from '../libraries/mgidUtils/mgidUtils.js'
+import { getCurrencyFromBidderRequest } from '../libraries/ortb2Utils/currency.js'
+
+/**
+ * @typedef {import('../src/adapters/bidderFactory.js').BidRequest} BidRequest
+ * @typedef {import('../src/adapters/bidderFactory.js').Bid} Bid
+ * @typedef {import('../src/adapters/bidderFactory.js').ServerResponse} ServerResponse
+ */
 
 const GVLID = 358;
 const DEFAULT_CUR = 'USD';
 const BIDDER_CODE = 'mgid';
-export const storage = getStorageManager({gvlid: GVLID, bidderCode: BIDDER_CODE});
+export const storage = getStorageManager({bidderCode: BIDDER_CODE});
 const ENDPOINT_URL = 'https://prebid.mgid.com/prebid/';
 const LOG_WARN_PREFIX = '[MGID warn]: ';
 const LOG_INFO_PREFIX = '[MGID info]: ';
@@ -55,8 +82,8 @@ const NATIVE_MINIMUM_REQUIRED_IMAGE_ASSETS = [
     required: true,
   }
 ];
-let _NATIVE_ASSET_ID_TO_KEY_MAP = {};
-let _NATIVE_ASSET_KEY_TO_ASSET_MAP = {};
+const _NATIVE_ASSET_ID_TO_KEY_MAP = {};
+const _NATIVE_ASSET_KEY_TO_ASSET_MAP = {};
 
 // loading _NATIVE_ASSET_ID_TO_KEY_MAP
 _each(NATIVE_ASSETS, anAsset => { _NATIVE_ASSET_ID_TO_KEY_MAP[anAsset.ID] = anAsset.KEY });
@@ -64,7 +91,7 @@ _each(NATIVE_ASSETS, anAsset => { _NATIVE_ASSET_ID_TO_KEY_MAP[anAsset.ID] = anAs
 _each(NATIVE_ASSETS, anAsset => { _NATIVE_ASSET_KEY_TO_ASSET_MAP[anAsset.KEY] = anAsset });
 
 export const spec = {
-  VERSION: '1.5',
+  VERSION: '1.8',
   code: BIDDER_CODE,
   gvlid: GVLID,
   supportedMediaTypes: [BANNER, NATIVE],
@@ -85,8 +112,8 @@ export const spec = {
       const nativeParams = deepAccess(bid, 'nativeParams');
       let assetsCount = 0;
       if (isPlainObject(nativeParams)) {
-        for (let k in nativeParams) {
-          let v = nativeParams[k];
+        for (const k in nativeParams) {
+          const v = nativeParams[k];
           const supportProp = spec.NATIVE_ASSET_KEY_TO_ASSET_MAP.hasOwnProperty(k);
           if (supportProp) {
             assetsCount++;
@@ -107,47 +134,46 @@ export const spec = {
         bannerOk = sizes[f].length === 2;
       }
     }
-    let acc = Number(bid.params.accountId);
-    let plcmt = Number(bid.params.placementId);
+    const acc = Number(bid.params.accountId);
+    const plcmt = Number(bid.params.placementId);
     return (bannerOk || nativeOk) && isPlainObject(bid.params) && !!bid.adUnitCode && isStr(bid.adUnitCode) && (plcmt > 0 ? bid.params.placementId.toString().search(spec.reId) === 0 : true) &&
       !!acc && acc > 0 && bid.params.accountId.toString().search(spec.reId) === 0;
   },
   /**
    * Make a server request from the list of BidRequests.
    *
-   * @param {validBidRequests[]} - an array of bids
+   * @param {BidRequest[]} validBidRequests A non-empty list of bid requests which should be sent to the Server.
+   * @param bidderRequest
    * @return ServerRequest Info describing the request to the server.
    */
   buildRequests: (validBidRequests, bidderRequest) => {
     // convert Native ORTB definition to old-style prebid native definition
     validBidRequests = convertOrtbRequestToProprietaryNative(validBidRequests);
-
+    const [bidRequest] = validBidRequests;
     logInfo(LOG_INFO_PREFIX + `buildRequests`);
     if (validBidRequests.length === 0) {
       return;
     }
     const info = pageInfo();
-    // TODO: the fallback seems to never be used here, and probably in the wrong order
-    const page = info.location || deepAccess(bidderRequest, 'refererInfo.page')
-    const hostname = parseUrl(page).hostname;
-    let domain = extractDomainFromHost(hostname) || hostname;
     const accountId = setOnAny(validBidRequests, 'params.accountId');
     const muid = getLocalStorageSafely('mgMuidn');
     let url = (setOnAny(validBidRequests, 'params.bidUrl') || ENDPOINT_URL) + accountId;
     if (isStr(muid) && muid.length > 0) {
       url += '?muid=' + muid;
     }
-    const cur = setOnAny(validBidRequests, 'params.currency') || setOnAny(validBidRequests, 'params.cur') || config.getConfig('currency.adServerCurrency') || DEFAULT_CUR;
+    const cur = setOnAny(validBidRequests, 'params.currency') || setOnAny(validBidRequests, 'params.cur') || getCurrencyFromBidderRequest(bidderRequest) || DEFAULT_CUR;
     const secure = window.location.protocol === 'https:' ? 1 : 0;
-    let imp = [];
+    const imp = [];
     validBidRequests.forEach(bid => {
       let tagid = deepAccess(bid, 'params.placementId') || 0;
       tagid = !tagid ? bid.adUnitCode : tagid + '/' + bid.adUnitCode;
-      let impObj = {
+      const impObj = {
         id: bid.bidId,
         tagid,
         secure,
       };
+      const gpid = deepAccess(bid, 'ortb2Imp.ext.gpid');
+      gpid && isStr(gpid) && deepSetValue(impObj, `ext.gpid`, gpid);
       const floorData = getBidFloor(bid, cur);
       if (floorData.floor) {
         impObj.bidfloor = floorData.floor;
@@ -155,7 +181,7 @@ export const spec = {
       if (floorData.cur) {
         impObj.bidfloorcur = floorData.cur;
       }
-      for (let mediaTypes in bid.mediaTypes) {
+      for (const mediaTypes in bid.mediaTypes) {
         switch (mediaTypes) {
           case BANNER:
             impObj.banner = createBannerRequest(bid);
@@ -180,33 +206,110 @@ export const spec = {
 
     const ortb2Data = bidderRequest?.ortb2 || {};
 
-    let request = {
+    const request = {
       id: deepAccess(bidderRequest, 'bidderRequestId'),
-      site: {domain, page},
+      site: ortb2Data?.site || {},
       cur: [cur],
       geo: {utcoffset: info.timeOffset},
-      device: {
-        ua: navigator.userAgent,
-        js: 1,
-        dnt: (navigator.doNotTrack === 'yes' || navigator.doNotTrack === '1' || navigator.msDoNotTrack === '1') ? 1 : 0,
-        h: screen.height,
-        w: screen.width,
-        language: getLanguage()
-      },
+      device: ortb2Data?.device || {},
       ext: {
         mgid_ver: spec.VERSION,
         prebid_ver: '$prebid.version$',
-        ...ortb2Data
       },
-      imp
+      imp,
+      tmax: bidderRequest?.timeout || config.getConfig('bidderTimeout') || 500,
     };
-    if (bidderRequest && bidderRequest.gdprConsent) {
-      request.user = {ext: {consent: bidderRequest.gdprConsent.consentString}};
-      request.regs = {ext: {gdpr: (bidderRequest.gdprConsent.gdprApplies ? 1 : 0)}}
+    // request level
+    const bcat = ortb2Data?.bcat || bidRequest?.params?.bcat || [];
+    const badv = ortb2Data?.badv || bidRequest?.params?.badv || [];
+    const wlang = ortb2Data?.wlang || bidRequest?.params?.wlang || [];
+    if (bcat.length > 0) {
+      request.bcat = bcat;
     }
-    if (info.referrer) {
-      request.site.ref = info.referrer
+    if (badv.length > 0) {
+      request.badv = badv;
     }
+    if (wlang.length > 0) {
+      request.wlang = wlang;
+    }
+    // site level
+    const page = deepAccess(bidderRequest, 'refererInfo.page') || info.location
+    if (!isStr(deepAccess(request.site, 'domain'))) {
+      const hostname = parseUrl(page).hostname;
+      request.site.domain = extractDomainFromHostExceptLocalhost(hostname) || hostname
+    }
+    if (!isStr(deepAccess(request.site, 'page'))) {
+      request.site.page = page
+    }
+    if (!isStr(deepAccess(request.site, 'ref'))) {
+      const ref = deepAccess(bidderRequest, 'refererInfo.ref') || info.referrer;
+      if (ref) {
+        request.site.ref = ref
+      }
+    }
+    // device level
+    if (!isStr(deepAccess(request.device, 'ua'))) {
+      request.device.ua = navigator.userAgent;
+    }
+    request.device.js = 1;
+    if (!isInteger(deepAccess(request.device, 'dnt'))) {
+      request.device.dnt = getDNT() ? 1 : 0;
+    }
+    if (!isInteger(deepAccess(request.device, 'h'))) {
+      request.device.h = screen.height;
+    }
+    if (!isInteger(deepAccess(request.device, 'w'))) {
+      request.device.w = screen.width;
+    }
+    if (!isStr(deepAccess(request.device, 'language'))) {
+      request.device.language = getLanguage();
+    }
+    // user & regs & privacy
+    if (isPlainObject(ortb2Data?.user)) {
+      request.user = ortb2Data.user;
+    }
+    if (isPlainObject(ortb2Data?.regs)) {
+      request.regs = ortb2Data.regs;
+    }
+    if (bidderRequest && isPlainObject(bidderRequest.gdprConsent)) {
+      if (!isStr(deepAccess(request.user, 'ext.consent'))) {
+        deepSetValue(request, 'user.ext.consent', bidderRequest.gdprConsent?.consentString);
+      }
+      if (!isBoolean(deepAccess(request.regs, 'ext.gdpr'))) {
+        deepSetValue(request, 'regs.ext.gdpr', bidderRequest.gdprConsent?.gdprApplies ? 1 : 0);
+      }
+    }
+    const userId = deepAccess(bidderRequest, 'userId')
+    if (isStr(userId)) {
+      deepSetValue(request, 'user.id', userId);
+    }
+    const eids = setOnAny(validBidRequests, 'userIdAsEids')
+    if (eids && eids.length > 0) {
+      deepSetValue(request, 'user.ext.eids', eids);
+    }
+    if (bidderRequest && isStr(bidderRequest.uspConsent)) {
+      if (!isBoolean(deepAccess(request.regs, 'ext.us_privacy'))) {
+        deepSetValue(request, 'regs.ext.us_privacy', bidderRequest.uspConsent);
+      }
+    }
+    if (bidderRequest && isPlainObject(bidderRequest.gppConsent)) {
+      if (!isStr(deepAccess(request.regs, 'gpp'))) {
+        deepSetValue(request, 'regs.gpp', bidderRequest.gppConsent?.gppString);
+      }
+      if (!isArray(deepAccess(request.regs, 'gpp_sid'))) {
+        deepSetValue(request, 'regs.gpp_sid', bidderRequest.gppConsent?.applicableSections);
+      }
+    }
+    if (config.getConfig('coppa')) {
+      if (!isInteger(deepAccess(request.regs, 'coppa'))) {
+        deepSetValue(request, 'regs.coppa', 1);
+      }
+    }
+    const schain = setOnAny(validBidRequests, 'ortb2.source.ext.schain');
+    if (schain) {
+      deepSetValue(request, 'source.ext.schain', schain);
+    }
+
     logInfo(LOG_INFO_PREFIX + `buildRequest:`, request);
     return {
       method: 'POST',
@@ -218,6 +321,7 @@ export const spec = {
    * Unpack the response from the server into a list of bids.
    *
    * @param {ServerResponse} serverResponse A successful response from the server.
+   * @param bidRequests
    * @return {Bid[]} An array of bids which were nested inside the server.
    */
   interpretResponse: (serverResponse, bidRequests) => {
@@ -245,13 +349,7 @@ export const spec = {
   },
   onBidWon: (bid) => {
     const cpm = deepAccess(bid, 'adserverTargeting.hb_pb') || '';
-    if (isStr(bid.nurl) && bid.nurl !== '') {
-      bid.nurl = bid.nurl.replace(
-        /\${AUCTION_PRICE}/,
-        cpm
-      );
-      triggerPixel(bid.nurl);
-    }
+    triggerNurlWithCpm(bid, cpm)
     if (bid.isBurl) {
       if (bid.mediaType === BANNER) {
         bid.ad = bid.ad.replace(
@@ -268,25 +366,15 @@ export const spec = {
     }
     logInfo(LOG_INFO_PREFIX + `onBidWon`);
   },
-  getUserSyncs: (syncOptions, serverResponses) => {
-    logInfo(LOG_INFO_PREFIX + `getUserSyncs`);
-  }
+  getUserSyncs: getUserSyncs,
 };
 
 registerBidder(spec);
 
-function setOnAny(collection, key) {
-  for (let i = 0, result; i < collection.length; i++) {
-    result = deepAccess(collection[i], key);
-    if (result) {
-      return result;
-    }
-  }
-}
-
 /**
  * Unpack the Server's Bid into a Prebid-compatible one.
  * @param serverBid
+ * @param cur
  * @return Bid
  */
 function prebidBid(serverBid, cur) {
@@ -329,25 +417,11 @@ function setMediaType(bid, newBid) {
   }
 }
 
-function extractDomainFromHost(pageHost) {
-  if (pageHost == 'localhost') {
+function extractDomainFromHostExceptLocalhost(pageHost) {
+  if (pageHost === 'localhost') {
     return 'localhost'
   }
-  let domain = null;
-  try {
-    let domains = /[-\w]+\.([-\w]+|[-\w]{3,}|[-\w]{1,3}\.[-\w]{2})$/i.exec(pageHost);
-    if (domains != null && domains.length > 0) {
-      domain = domains[0];
-      for (let i = 1; i < domains.length; i++) {
-        if (domains[i].length > domain.length) {
-          domain = domains[i];
-        }
-      }
-    }
-  } catch (e) {
-    domain = null;
-  }
-  return domain;
+  return extractDomainFromHost(pageHost)
 }
 
 function getLanguage() {
@@ -377,7 +451,7 @@ function setLocalStorageSafely(key, val) {
 
 function createBannerRequest(bid) {
   const sizes = deepAccess(bid, 'mediaTypes.banner.sizes');
-  let format = [];
+  const format = [];
   if (sizes.length > 1) {
     for (let f = 0; f < sizes.length; f++) {
       if (sizes[f].length === 2) {
@@ -385,7 +459,7 @@ function createBannerRequest(bid) {
       }
     }
   }
-  let r = {
+  const r = {
     w: sizes && sizes[0][0],
     h: sizes && sizes[0][1],
   };
@@ -400,11 +474,11 @@ function createBannerRequest(bid) {
 }
 
 function createNativeRequest(params) {
-  let nativeRequestObject = {
+  const nativeRequestObject = {
     plcmtcnt: 1,
     assets: []
   };
-  for (let key in params) {
+  for (const key in params) {
     let assetObj = {};
     if (params.hasOwnProperty(key)) {
       if (!(nativeRequestObject.assets && nativeRequestObject.assets.length > 0 && nativeRequestObject.assets.hasOwnProperty(key))) {
@@ -487,10 +561,10 @@ function createNativeRequest(params) {
 
   // for native image adtype prebid has to have few required assests i.e. title,sponsoredBy, image
   // if any of these are missing from the request then request will not be sent
-  let requiredAssetCount = NATIVE_MINIMUM_REQUIRED_IMAGE_ASSETS.length;
+  const requiredAssetCount = NATIVE_MINIMUM_REQUIRED_IMAGE_ASSETS.length;
   let presentrequiredAssetCount = 0;
   NATIVE_MINIMUM_REQUIRED_IMAGE_ASSETS.forEach(ele => {
-    let lengthOfExistingAssets = nativeRequestObject.assets.length;
+    const lengthOfExistingAssets = nativeRequestObject.assets.length;
     for (let i = 0; i < lengthOfExistingAssets; i++) {
       if (ele.id === nativeRequestObject.assets[i].id) {
         presentrequiredAssetCount++;
@@ -525,33 +599,25 @@ function commonNativeRequestObject(nativeAsset, params) {
 function parseNativeResponse(bid, newBid) {
   newBid.native = {};
   if (bid.hasOwnProperty('adm')) {
-    let adm = '';
+    let nativeAdm = '';
     try {
-      adm = JSON.parse(bid.adm);
+      nativeAdm = JSON.parse(bid.adm);
     } catch (ex) {
       logWarn(LOG_WARN_PREFIX + 'Error: Cannot parse native response for ad response: ' + newBid.adm);
       return;
     }
-    if (adm && adm.native && adm.native.assets && adm.native.assets.length > 0) {
+    if (nativeAdm && nativeAdm.native && nativeAdm.native.assets && nativeAdm.native.assets.length > 0) {
       newBid.mediaType = NATIVE;
-      for (let i = 0, len = adm.native.assets.length; i < len; i++) {
-        switch (adm.native.assets[i].id) {
+      for (let i = 0, len = nativeAdm.native.assets.length; i < len; i++) {
+        switch (nativeAdm.native.assets[i].id) {
           case NATIVE_ASSETS.TITLE.ID:
-            newBid.native.title = adm.native.assets[i].title && adm.native.assets[i].title.text;
+            newBid.native.title = nativeAdm.native.assets[i].title && nativeAdm.native.assets[i].title.text;
             break;
           case NATIVE_ASSETS.IMAGE.ID:
-            newBid.native.image = {
-              url: adm.native.assets[i].img && adm.native.assets[i].img.url,
-              height: adm.native.assets[i].img && adm.native.assets[i].img.h,
-              width: adm.native.assets[i].img && adm.native.assets[i].img.w,
-            };
+            newBid.native.image = copyFromAdmAsset(nativeAdm.native.assets[i]);
             break;
           case NATIVE_ASSETS.ICON.ID:
-            newBid.native.icon = {
-              url: adm.native.assets[i].img && adm.native.assets[i].img.url,
-              height: adm.native.assets[i].img && adm.native.assets[i].img.h,
-              width: adm.native.assets[i].img && adm.native.assets[i].img.w,
-            };
+            newBid.native.icon = copyFromAdmAsset(nativeAdm.native.assets[i]);
             break;
           case NATIVE_ASSETS.SPONSOREDBY.ID:
           case NATIVE_ASSETS.SPONSORED.ID:
@@ -561,14 +627,14 @@ function parseNativeResponse(bid, newBid) {
           case NATIVE_ASSETS.BODY.ID:
           case NATIVE_ASSETS.DISPLAYURL.ID:
           case NATIVE_ASSETS.CTA.ID:
-            newBid.native[spec.NATIVE_ASSET_ID_TO_KEY_MAP[adm.native.assets[i].id]] = adm.native.assets[i].data && adm.native.assets[i].data.value;
+            newBid.native[spec.NATIVE_ASSET_ID_TO_KEY_MAP[nativeAdm.native.assets[i].id]] = nativeAdm.native.assets[i].data && nativeAdm.native.assets[i].data.value;
             break;
         }
       }
-      newBid.native.clickUrl = adm.native.link && adm.native.link.url;
-      newBid.native.clickTrackers = (adm.native.link && adm.native.link.clicktrackers) || [];
-      newBid.native.impressionTrackers = adm.native.imptrackers || [];
-      newBid.native.jstracker = adm.native.jstracker || [];
+      newBid.native.clickUrl = nativeAdm.native.link && nativeAdm.native.link.url;
+      newBid.native.clickTrackers = (nativeAdm.native.link && nativeAdm.native.link.clicktrackers) || [];
+      newBid.native.impressionTrackers = nativeAdm.native.imptrackers || [];
+      newBid.native.jstracker = nativeAdm.native.jstracker || [];
       newBid.width = 0;
       newBid.height = 0;
     }
@@ -589,8 +655,8 @@ function pageInfo() {
     location: l,
     referrer: r || '',
     masked: m,
-    wWidth: w.innerWidth,
-    wHeight: w.innerHeight,
+    wWidth: getWinDimensions().innerWidth,
+    wHeight: getWinDimensions().innerHeight,
     date: t.toUTCString(),
     timeOffset: t.getTimezoneOffset()
   };
@@ -600,6 +666,7 @@ function pageInfo() {
  * Get the floor price from bid.params for backward compatibility.
  * If not found, then check floor module.
  * @param bid A valid bid object
+ * @param cur
  * @returns {*|number} floor price
  */
 function getBidFloor(bid, cur) {
@@ -626,4 +693,12 @@ function getBidFloor(bid, cur) {
     cur = ''
   }
   return {floor: bidFloor, cur: cur}
+}
+
+function copyFromAdmAsset(asset) {
+  return {
+    url: asset.img && asset.img.url,
+    height: asset.img && asset.img.h,
+    width: asset.img && asset.img.w,
+  }
 }

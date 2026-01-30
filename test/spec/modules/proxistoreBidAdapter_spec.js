@@ -23,7 +23,7 @@ describe('ProxistoreBidAdapter', function () {
       },
     },
   };
-  let bid = {
+  const bid = {
     sizes: [[300, 600]],
     params: {
       website: 'example.fr',
@@ -81,7 +81,7 @@ describe('ProxistoreBidAdapter', function () {
     it('should contain a valid url', function () {
       // has gdpr consent
       expect(request.url).equal(url.cookieBase);
-      // doens't have gpdr consent
+      // doens't have gdpr consent
       bidderRequest.gdprConsent.vendorData = null;
 
       request = spec.buildRequests([bid], bidderRequest);

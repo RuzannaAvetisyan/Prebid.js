@@ -2,7 +2,12 @@ import { expect } from 'chai';
 import { spec } from 'modules/amxBidAdapter.js';
 import { createEidsArray } from 'modules/userId/eids.js';
 import { BANNER, VIDEO } from 'src/mediaTypes.js';
+import { config } from 'src/config.js';
+import { server } from 'test/mocks/xhr.js';
 import * as utils from 'src/utils.js';
+import { getGlobal } from '../../../src/prebidGlobal.js';
+
+import {getGlobalVarName} from '../../../src/buildOptions.js';
 
 const sampleRequestId = '82c91e127a9b93e';
 const sampleDisplayAd = `<script src='https://assets.a-mo.net/tmode.v1.js'></script>`;
@@ -10,7 +15,7 @@ const sampleDisplayCRID = '78827819';
 // minimal example vast
 const sampleVideoAd = (addlImpression) =>
   `
-<?xml version="1.0" encoding="UTF-8" ?><VAST version="2.0"><Ad id="128a6.44d74.46b3"><InLine><Error><![CDATA[http://example.net/hbx/verr?e=]]></Error><Impression><![CDATA[http://example.net/hbx/vimp?lid=test&aid=testapp]]></Impression><Creatives><Creative sequence="1"><Linear><Duration>00:00:15</Duration><TrackingEvents><Tracking event="firstQuartile"><![CDATA[https://example.com?event=first_quartile]]></Tracking></TrackingEvents><VideoClicks><ClickThrough><![CDATA[http://example.com]]></ClickThrough></VideoClicks><MediaFiles><MediaFile delivery="progressive" width="16" height="9" type="video/mp4" bitrate="800"><![CDATA[https://example.com/media.mp4]]></MediaFile></MediaFiles></Linear></Creative></Creatives>${addlImpression}</InLine></Ad></VAST>
+<?xml version='1.0' encoding='UTF-8' ?><VAST version='2.0'><Ad id='128a6.44d74.46b3'><InLine><Error><![CDATA[http://example.net/hbx/verr?e=]]></Error><Impression><![CDATA[http://example.net/hbx/vimp?lid=test&aid=testapp]]></Impression><Creatives><Creative sequence='1'><Linear><Duration>00:00:15</Duration><TrackingEvents><Tracking event='firstQuartile'><![CDATA[https://example.com?event=first_quartile]]></Tracking></TrackingEvents><VideoClicks><ClickThrough><![CDATA[http://example.com]]></ClickThrough></VideoClicks><MediaFiles><MediaFile delivery='progressive' width='16' height='9' type='video/mp4' bitrate='800'><![CDATA[https://example.com/media.mp4]]></MediaFile></MediaFiles></Linear></Creative></Creatives>${addlImpression}</InLine></Ad></VAST>
 `.replace(/\n+/g, '');
 
 const sampleFPD = {
@@ -34,9 +39,19 @@ const sampleBidderRequest = {
     consentString: utils.getUniqueIdentifierStr(),
     vendorData: {},
   },
-  auctionId: utils.getUniqueIdentifierStr(),
+  gppConsent: {
+    gppString: 'example',
+    applicableSections: 'example',
+  },
+
+  auctionId: null,
+
   uspConsent: '1YYY',
   refererInfo: {
+    reachedTop: true,
+    numIframes: 10,
+    stack: ['https://www.prebid.org'],
+    canonicalUrl: 'https://prebid.org',
     location: 'https://www.prebid.org',
     site: 'prebid.org',
     topmostLocation: 'https://www.prebid.org',
@@ -81,7 +96,8 @@ const sampleBidRequestBase = {
   adUnitCode: 'div-gpt-ad-example',
   transactionId: utils.getUniqueIdentifierStr(),
   bidId: sampleRequestId,
-  auctionId: utils.getUniqueIdentifierStr(),
+
+  auctionId: null,
 };
 
 const schainConfig = {
@@ -101,7 +117,7 @@ const sampleBidRequestVideo = {
   ...sampleBidRequestBase,
   bidId: sampleRequestId + '_video',
   sizes: [[300, 150]],
-  schain: schainConfig,
+  ortb2: { source: { ext: { schain: schainConfig } } },
   mediaTypes: {
     [VIDEO]: {
       sizes: [[360, 250]],
@@ -195,9 +211,14 @@ describe('AmxBidAdapter', () => {
     });
   });
   describe('getUserSync', () => {
-    it('will only sync from valid server responses', () => {
+    it('Will perform an iframe sync even if there is no server response..', () => {
       const syncs = spec.getUserSyncs({ iframeEnabled: true });
-      expect(syncs).to.eql([]);
+      expect(syncs).to.eql([
+        {
+          type: 'iframe',
+          url: 'https://prebid.a-mo.net/isyn?gdpr_consent=&gdpr=0&us_privacy=&gpp=&gpp_sid=',
+        },
+      ]);
     });
 
     it('will return valid syncs from a server response', () => {
@@ -242,7 +263,7 @@ describe('AmxBidAdapter', () => {
         sampleBidderRequest
       );
       expect(prebidVersion).to.equal('$prebid.version$');
-      expect(prebidGlobal).to.equal('$$PREBID_GLOBAL$$');
+      expect(prebidGlobal).to.equal(getGlobalVarName());
     });
 
     it('reads test mode from the first bid request', () => {
@@ -258,6 +279,20 @@ describe('AmxBidAdapter', () => {
         sampleBidderRequest
       );
       expect(data.tm).to.equal(true);
+    });
+
+    it('will attach additional referrer info data', () => {
+      const { data } = spec.buildRequests(
+        [sampleBidRequestBase],
+        sampleBidderRequest
+      );
+      expect(data.ri.r).to.equal(
+        sampleBidderRequest.refererInfo.topmostLocation
+      );
+      expect(data.ri.t).to.equal(sampleBidderRequest.refererInfo.reachedTop);
+      expect(data.ri.l).to.equal(sampleBidderRequest.refererInfo.numIframes);
+      expect(data.ri.s).to.equal(sampleBidderRequest.refererInfo.stack);
+      expect(data.ri.c).to.equal(sampleBidderRequest.refererInfo.canonicalUrl);
     });
 
     it('if prebid is in an iframe, will use the frame url as domain, if the topmost is not avialable', () => {
@@ -286,15 +321,16 @@ describe('AmxBidAdapter', () => {
       expect(data.re).to.equal('http://search-traffic-source.com');
     });
 
-    it('handles referer data and GDPR, USP Consent, COPPA', () => {
+    it('handles GDPR, USP Consent, COPPA, and GPP', () => {
       const { data } = spec.buildRequests(
         [sampleBidRequestBase],
         sampleBidderRequest
       );
-      delete data.m; // don't deal with "m" in this test
+      delete data.m; // don't deal with 'm' in this test
       expect(data.gs).to.equal(sampleBidderRequest.gdprConsent.gdprApplies);
       expect(data.gc).to.equal(sampleBidderRequest.gdprConsent.consentString);
       expect(data.usp).to.equal(sampleBidderRequest.uspConsent);
+      expect(data.gpp).to.equal(sampleBidderRequest.gppConsent);
       expect(data.cpp).to.equal(0);
     });
 
@@ -316,6 +352,105 @@ describe('AmxBidAdapter', () => {
       expect(data.bwc).to.equal(bidderWinsCount);
       expect(data.trc).to.equal(0);
     });
+
+    it('will attach sync configuration', () => {
+      const request = () =>
+        spec.buildRequests([sampleBidRequestBase], sampleBidderRequest);
+
+      const setConfig = (filterSettings) =>
+        config.setConfig({
+          userSync: {
+            syncsPerBidder: 2,
+            syncDelay: 2300,
+            syncEnabled: true,
+            filterSettings,
+          },
+        });
+
+      const test = (filterSettings) => {
+        setConfig(filterSettings);
+        return request().data.sync;
+      };
+
+      const base = { d: 2300, l: 2, e: true };
+
+      const tests = [
+        [undefined, { ...base, t: 0 }],
+        [
+          {
+            image: {
+              bidders: '*',
+              filter: 'include',
+            },
+            iframe: {
+              bidders: '*',
+              filter: 'include',
+            },
+          },
+          { ...base, t: 3 },
+        ],
+        [
+          {
+            image: {
+              bidders: ['amx'],
+            },
+            iframe: {
+              bidders: '*',
+              filter: 'include',
+            },
+          },
+          { ...base, t: 3 },
+        ],
+        [
+          {
+            all: {
+              bidders: ['amx'],
+            },
+          },
+          { ...base, t: 3 },
+        ],
+        [
+          {
+            all: {
+              bidders: '*',
+              filter: 'include',
+            },
+          },
+          { ...base, t: 3 },
+        ],
+        [
+          {
+            image: {
+              bidders: ['other'],
+            },
+            iframe: {
+              bidders: '*',
+            },
+          },
+          { ...base, t: 2 },
+        ],
+        [
+          {
+            image: {
+              bidders: ['amx'],
+            },
+            iframe: {
+              bidders: ['amx'],
+              filter: 'exclude',
+            },
+          },
+          { ...base, t: 1 },
+        ],
+      ];
+
+      for (let i = 0, l = tests.length; i < l; i++) {
+        const [result, expected] = tests[i];
+        expect(test(result), `input: ${JSON.stringify(result)}`).to.deep.equal(
+          expected
+        );
+      }
+    });
+
     it('will forward first-party data', () => {
       const { data } = spec.buildRequests(
         [sampleBidRequestBase],
@@ -327,7 +462,6 @@ describe('AmxBidAdapter', () => {
     it('will collect & forward RTI user IDs', () => {
       const randomRTI = `greatRTI${Math.floor(Math.random() * 100)}`;
       const userId = {
-        britepoolid: 'sample-britepool',
         criteoId: 'sample-criteo',
         digitrustid: { data: { id: 'sample-digitrust' } },
         id5id: { uid: 'sample-id5' },
@@ -405,7 +539,15 @@ describe('AmxBidAdapter', () => {
 
     it('can build a video request', () => {
       const { data } = spec.buildRequests(
-        [{...sampleBidRequestVideo, params: { ...sampleBidRequestVideo.params, adUnitId: 'custom-auid' }}],
+        [
+          {
+            ...sampleBidRequestVideo,
+            params: {
+              ...sampleBidRequestVideo.params,
+              adUnitId: 'custom-auid',
+            },
+          },
+        ],
         sampleBidderRequest
       );
       expect(Object.keys(data.m).length).to.equal(1);
@@ -460,6 +602,89 @@ describe('AmxBidAdapter', () => {
       expect(parsed).to.eql([]);
     });
 
+    const cases = [
+      [
+        'pbjs.bidderSettings',
+        (conf) => {
+          const before = getGlobal().bidderSettings;
+          getGlobal().bidderSettings = conf;
+          return before;
+        },
+        (before) => {
+          getGlobal().bidderSettings = before;
+        },
+      ],
+      [
+        'setConfig / bidderSettings (legacy)',
+        (conf) => {
+          const before = config.getConfig();
+          config.setConfig({
+            bidderSettings: conf,
+          });
+
+          return before;
+        },
+        (before) => {
+          config.setConfig(before);
+        },
+      ],
+    ];
+
+    cases.forEach(([name, setup, teardown]) => {
+      it(`will read an bidderCode override from bid.ext.prebid.meta, set with ${name}`, () => {
+        const currentConfig = setup({
+          amx: {
+            allowAlternateBidderCodes: true,
+          },
+        });
+        const parsed = spec.interpretResponse(
+          {
+            body: {
+              ...sampleServerResponse,
+              r: {
+                [sampleRequestId]: [
+                  {
+                    ...sampleServerResponse.r[sampleRequestId][0],
+                    b: [
+                      {
+                        ...sampleServerResponse.r[sampleRequestId][0].b[0],
+                        ext: {
+                          bc: 'amx-pmp',
+                          ds: 'example',
+                          dsp: 'example-dsp',
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+          baseRequest
+        );
+
+        teardown(currentConfig);
+        expect(parsed.length).to.equal(1); // we removed one
+
+        // we should have display, video, display
+        expect(parsed[0]).to.deep.equal({
+          ...baseBidResponse,
+          meta: {
+            ...baseBidResponse.meta,
+            mediaType: BANNER,
+            demandSource: 'example',
+            networkId: 'example-dsp',
+          },
+          mediaType: BANNER,
+          bidderCode: 'amx-pmp',
+          width: 300,
+          height: 600, // from the bid itself
+          ttl: 90,
+          ad: sampleDisplayAd,
+        });
+      });
+    });
+
     it('can parse a display ad', () => {
       const parsed = spec.interpretResponse(
         { body: sampleServerResponse },
@@ -509,7 +734,14 @@ describe('AmxBidAdapter', () => {
     before(() => {
       _Image = window.Image;
       window.Image = class FakeImage {
+        _src = '';
+
+        get src() {
+          return this._src;
+        }
+
         set src(value) {
+          this._src = value;
           firedPixels.push(value);
         }
       };
@@ -560,15 +792,49 @@ describe('AmxBidAdapter', () => {
     });
 
     it('will log an event for timeout', () => {
-      spec.onTimeout({
-        bidder: 'example',
-        bidId: 'test-bid-id',
-        adUnitCode: 'div-gpt-ad',
-        timeout: 300,
-        auctionId: utils.getUniqueIdentifierStr(),
+      // this will use sendBeacon..
+      spec.onTimeout([
+        {
+          bidder: 'example',
+          bidId: 'test-bid-id',
+          adUnitCode: 'div-gpt-ad',
+          ortb2: {
+            site: {
+              ref: 'https://example.com',
+            },
+          },
+          params: {
+            tagId: 'tag-id',
+          },
+          timeout: 300,
+          auctionId: utils.getUniqueIdentifierStr(),
+        },
+      ]);
+
+      const [request] = server.requests;
+      request.respond(204, { 'Content-Type': 'text/html' }, null);
+      expect(request.url).to.equal('https://1x1.a-mo.net/e');
+
+      if (typeof Request !== 'undefined' && 'keepalive' in Request.prototype) {
+        expect(request.fetch.request.keepalive).to.equal(true);
+      }
+
+      const { c: common, e: events } = JSON.parse(request.requestBody);
+      expect(common).to.deep.equal({
+        V: '$prebid.version$',
+        vg: getGlobalVarName(),
+        U: null,
+        re: 'https://example.com',
       });
-      expect(firedPixels.length).to.equal(1);
-      expect(firedPixels[0]).to.match(/\/hbx\/g_pbto/);
+
+      expect(events.length).to.equal(1);
+      const [event] = events;
+      expect(event.n).to.equal('g_pbto');
+      expect(event.A).to.equal('example');
+      expect(event.mid).to.equal('tag-id');
+      expect(event.cn).to.equal(300);
+      expect(event.bid).to.equal('test-bid-id');
+      expect(event.a).to.equal('div-gpt-ad');
     });
 
     it('will log an event for prebid win', () => {

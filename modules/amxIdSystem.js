@@ -10,28 +10,27 @@ import {ajaxBuilder} from '../src/ajax.js';
 import {submodule} from '../src/hook.js';
 import {getRefererInfo} from '../src/refererDetection.js';
 import {deepAccess, logError} from '../src/utils.js';
+import {getStorageManager} from '../src/storageManager.js';
+import {MODULE_TYPE_UID} from '../src/activities/modules.js';
+import {domainOverrideToRootDomain} from '../libraries/domainOverrideToRootDomain/index.js';
+
+import {getGlobalVarName} from '../src/buildOptions.js';
 
 const NAME = 'amxId';
 const GVL_ID = 737;
 const ID_KEY = NAME;
-const version = '1.0';
+const version = '2.0';
 const SYNC_URL = 'https://id.a-mx.com/sync/';
 const AJAX_TIMEOUT = 300;
+const AJAX_OPTIONS = {method: 'GET', withCredentials: true, contentType: 'text/plain'};
+
+export const storage = getStorageManager({moduleName: NAME, moduleType: MODULE_TYPE_UID});
+const AMUID_KEY = '__amuidpb';
+const getBidAdapterID = () => storage.localStorageIsEnabled() ? storage.getDataFromLocalStorage(AMUID_KEY) : null;
 
 function validateConfig(config) {
-  if (config == null || config.storage == null) {
-    logError(`${NAME}: config.storage is required.`);
-    return false;
-  }
-
-  if (config.storage.type !== 'html5') {
-    logError(
-      `${NAME} only supports storage.type "html5". ${config.storage.type} was provided`
-    );
-    return false;
-  }
-
   if (
+    config.storage != null &&
     typeof config.storage.expires === 'number' &&
     config.storage.expires > 30
   ) {
@@ -44,7 +43,7 @@ function validateConfig(config) {
   return true;
 }
 
-function handleSyncResponse(client, response, callback) {
+function handleSyncResponse(client, response, params, callback) {
   if (response.id != null && response.id.length > 0) {
     callback(response.id);
     return;
@@ -72,7 +71,7 @@ function handleSyncResponse(client, response, callback) {
       logError(`${NAME} invalid value`, complete);
       callback(null);
     },
-  });
+  }, params, AJAX_OPTIONS);
 }
 
 export const amxIdSubmodule = {
@@ -97,24 +96,32 @@ export const amxIdSubmodule = {
       ? { [ID_KEY]: value }
       : undefined,
 
+  domainOverride: domainOverrideToRootDomain(storage, NAME),
+
   getId(config, consentData, _extant) {
     if (!validateConfig(config)) {
       return undefined;
     }
 
-    const consent = consentData || { gdprApplies: false, consentString: '' };
+    const consent = consentData?.gdpr || { gdprApplies: false, consentString: '' };
     const client = ajaxBuilder(AJAX_TIMEOUT);
     const usp = uspDataHandler.getConsentData();
     const ref = getRefererInfo();
 
     const params = {
       tagId: deepAccess(config, 'params.tagId', ''),
-      // TODO: are these referer values correct?
+
       ref: ref.ref,
       u: ref.location,
+      tl: ref.topmostLocation,
+      nf: ref.numIframes,
+      rt: ref.reachedTop,
+
       v: '$prebid.version$',
-      vg: '$$PREBID_GLOBAL$$',
+      av: version,
+      vg: getGlobalVarName(),
       us_privacy: usp,
+      am: getBidAdapterID(),
       gdpr: consent.gdprApplies ? 1 : 0,
       gdpr_consent: consent.consentString,
     };
@@ -131,24 +138,27 @@ export const amxIdSubmodule = {
             if (responseText != null && responseText.length > 0) {
               try {
                 const parsed = JSON.parse(responseText);
-                handleSyncResponse(client, parsed, done);
+                handleSyncResponse(client, parsed, params, done);
                 return;
               } catch (e) {
                 logError(`${NAME} invalid response`, responseText);
               }
             }
-
             done(null);
           },
         },
         params,
-        {
-          method: 'GET'
-        }
+        AJAX_OPTIONS
       );
 
     return { callback };
   },
+  eids: {
+    amxId: {
+      source: 'amxdt.net',
+      atype: 1,
+    },
+  }
 };
 
 submodule('userId', amxIdSubmodule);

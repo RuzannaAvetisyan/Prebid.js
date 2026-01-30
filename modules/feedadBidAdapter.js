@@ -4,10 +4,35 @@ import {BANNER} from '../src/mediaTypes.js';
 import {ajax} from '../src/ajax.js';
 
 /**
+ * @typedef {import('../src/adapters/bidderFactory.js').BidRequest} BidRequest
+ * @typedef {import('../src/adapters/bidderFactory.js').Bid} Bid
+ * @typedef {import('../src/adapters/bidderFactory.js').ServerRequest} ServerRequest
+ * @typedef {import('../src/adapters/bidderFactory.js').SyncOptions} SyncOptions
+ * @typedef {import('../src/adapters/bidderFactory.js').BidderSpec} BidderSpec
+ * @typedef {import('../src/adapters/bidderFactory.js').MediaType} MediaType
+ */
+
+/**
  * Version of the FeedAd bid adapter
  * @type {string}
  */
-const VERSION = '1.0.3';
+const VERSION = '1.0.6';
+
+/**
+ * @typedef {object} FeedAdUserSync
+ * @inner
+ *
+ * @property {string} type
+ * @property {string} url
+ */
+
+/**
+ * @typedef {object} FeedAdBidExtension
+ * @inner
+ *
+ * @property {FeedAdUserSync[]} pixels
+ * @property {FeedAdUserSync[]} iframes
+ */
 
 /**
  * @typedef {object} FeedAdApiBidRequest
@@ -16,7 +41,8 @@ const VERSION = '1.0.3';
  * @property {number} ad_type
  * @property {string} client_token
  * @property {string} placement_id
- * @property {string} sdk_version
+ * @property {string} prebid_adapter_version
+ * @property {string} prebid_sdk_version
  * @property {boolean} app_hybrid
  *
  * @property {string} [app_bundle_id]
@@ -40,7 +66,7 @@ const VERSION = '1.0.3';
  * @property {string} requestId - bids[].bidId
  * @property {number} ttl - Time to live for this ad
  * @property {number} width - Width of creative returned in [].ad
- * @property {object} [ext] - an extension object
+ * @property {FeedAdBidExtension} [ext] - an extension object
  */
 
 /**
@@ -60,6 +86,14 @@ const VERSION = '1.0.3';
  * @property [app_name] {string}
  * @property [device_adid] {string}
  * @property [device_platform] {1|2|3} 1 - Android | 2 - iOS | 3 - Windows
+ */
+
+/**
+ * @typedef {object} FeedAdServerResponse
+ * @augments {Object}
+ * @inner
+ *
+ * @property {FeedAdApiBidResponse[]} body - the body of a FeedAd server response
  */
 
 /**
@@ -151,8 +185,8 @@ function isValidPlacementId(placementId) {
 
 /**
  * Checks if the given media types contain unsupported settings
- * @param {MediaTypes} mediaTypes - the media types to check
- * @return {MediaTypes} the unsupported settings, empty when all types are supported
+ * @param {Object} mediaTypes - the media types to check
+ * @return {Object} the unsupported settings, empty when all types are supported
  */
 function filterSupportedMediaTypes(mediaTypes) {
   return {
@@ -164,7 +198,7 @@ function filterSupportedMediaTypes(mediaTypes) {
 
 /**
  * Checks if the given media types are empty
- * @param {MediaTypes} mediaTypes - the types to check
+ * @param {Object} mediaTypes - the types to check
  * @return {boolean} true if the types are empty
  */
 function isMediaTypesEmpty(mediaTypes) {
@@ -181,7 +215,8 @@ function createApiBidRParams(request) {
     ad_type: 0,
     client_token: request.params.clientToken,
     placement_id: request.params.placementId,
-    sdk_version: `prebid_${VERSION}`,
+    prebid_adapter_version: VERSION,
+    prebid_sdk_version: '$prebid.version$',
     app_hybrid: false,
   });
 }
@@ -196,20 +231,21 @@ function buildRequests(validBidRequests, bidderRequest) {
   if (!bidderRequest) {
     return [];
   }
-  let acceptableRequests = validBidRequests.filter(request => !isMediaTypesEmpty(filterSupportedMediaTypes(request.mediaTypes)));
+  const acceptableRequests = validBidRequests.filter(request => !isMediaTypesEmpty(filterSupportedMediaTypes(request.mediaTypes)));
   if (acceptableRequests.length === 0) {
     return [];
   }
-  let data = Object.assign({}, bidderRequest, {
+  const data = Object.assign({}, bidderRequest, {
     bids: acceptableRequests.map(req => {
       req.params = createApiBidRParams(req);
       return req;
     })
   });
-  data.bids.forEach(bid => BID_METADATA[bid.bidId] = {
-    // TODO: is 'page' the right value here?
-    referer: data.refererInfo.page,
-    transactionId: bid.transactionId
+  data.bids.forEach(bid => {
+    BID_METADATA[bid.bidId] = {
+      referer: data.refererInfo.page,
+      transactionId: bid.ortb2Imp?.ext?.tid,
+    };
   });
   if (bidderRequest.gdprConsent) {
     data.consentIabTcf = bidderRequest.gdprConsent.consentString;
@@ -227,7 +263,7 @@ function buildRequests(validBidRequests, bidderRequest) {
 
 /**
  * Adapts the FeedAd server response to Prebid format
- * @param {ServerResponse} serverResponse - the FeedAd server response
+ * @param {FeedAdServerResponse} serverResponse - the FeedAd server response
  * @param {BidRequest} request - the initial bid request
  * @returns {Bid[]} the FeedAd bids
  */
@@ -266,7 +302,8 @@ function createTrackingParams(data, klass) {
     prebid_bid_id: bidId,
     prebid_transaction_id: transactionId,
     referer,
-    sdk_version: VERSION
+    prebid_adapter_version: VERSION,
+    prebid_sdk_version: '$prebid.version$',
   };
 }
 
@@ -280,7 +317,7 @@ function trackingHandlerFactory(klass) {
     if (!data) {
       return;
     }
-    let params = createTrackingParams(data, klass);
+    const params = createTrackingParams(data, klass);
     if (params) {
       ajax(`${API_ENDPOINT}${API_PATH_TRACK_REQUEST}`, null, JSON.stringify(params), {
         withCredentials: true,
@@ -294,16 +331,20 @@ function trackingHandlerFactory(klass) {
 /**
  * Reads the user syncs off the server responses and converts them into Prebid.JS format
  * @param {SyncOptions} syncOptions
- * @param {FeedAdApiBidResponse[]} serverResponses
+ * @param {FeedAdServerResponse[]} serverResponses
  * @param gdprConsent
  * @param uspConsent
  */
 function getUserSyncs(syncOptions, serverResponses, gdprConsent, uspConsent) {
-  return serverResponses.map(response => response.ext)
-    .flatMap(extension => {
+  return serverResponses.flatMap(response => {
+    // merge all response bodies into one
+    const body = response.body;
+    return isArray(body) ? body : [];
+  })
+    .flatMap(/** @param {FeedAdApiBidResponse} bidResponse */ bidResponse => {
       // extract user syncs from extension
-      const pixels = syncOptions.pixelEnabled && extension.pixels ? extension.pixels : [];
-      const iframes = syncOptions.iframeEnabled && extension.iframes ? extension.iframes : [];
+      const pixels = (syncOptions.pixelEnabled && bidResponse?.ext?.pixels) ? bidResponse.ext.pixels : [];
+      const iframes = (syncOptions.iframeEnabled && bidResponse?.ext?.iframes) ? bidResponse.ext.iframes : [];
       return pixels.concat(...iframes);
     })
     .reduce((syncs, sync) => {

@@ -50,9 +50,11 @@ The Trade Desk bid adapter supports Banner and Video.
                             supplySourceId: 'supplier',
                             publisherId: '1427ab10f2e448057ed3b422',
                             placementId: '/1111/home#header',
+                            bidfloor: 0.45,
                             banner: {
                                 expdir: [1, 3]
                             },
+                            customBidderEndpoint: 'https://customBidderEndpoint/bid/bidder/',
                         }
                     }
                 ]
@@ -107,7 +109,9 @@ The Trade Desk bid adapter supports Banner and Video.
                         params: {
                             supplySourceId: 'supplier',
                             publisherId: '1427ab10f2e448057ed3b422',
-                            placementId: '/1111/home#header'
+                            placementId: '/1111/home#header',
+                            bidfloor: 0.45,
+                            customBidderEndpoint: 'https://customBidderEndpoint/bid/bidder/',
                         }
                     }
                 ]

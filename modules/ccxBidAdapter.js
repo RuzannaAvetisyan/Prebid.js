@@ -10,7 +10,7 @@ const SUPPORTED_VIDEO_MIMES = ['video/mp4', 'video/x-flv']
 const SUPPORTED_VIDEO_PLAYBACK_METHODS = [1, 2, 3, 4]
 
 function _getDeviceObj () {
-  let device = {}
+  const device = {}
   device.w = screen.width
   device.y = screen.height
   device.ua = navigator.userAgent
@@ -18,9 +18,8 @@ function _getDeviceObj () {
 }
 
 function _getSiteObj (bidderRequest) {
-  let site = {}
-  // TODO: does the fallback to window.location make sense?
-  let url = bidderRequest?.refererInfo?.page || window.location.href
+  const site = {}
+  let url = bidderRequest?.refererInfo?.page || ''
   if (url.length > 0) {
     url = url.split('?')[0]
   }
@@ -65,12 +64,12 @@ function _validateSizes (sizeObj, type) {
   return true
 }
 
-function _buildBid (bid) {
-  let placement = {}
+function _buildBid (bid, bidderRequest) {
+  const placement = {}
   placement.id = bid.bidId
   placement.secure = 1
 
-  let sizes = deepAccess(bid, 'mediaTypes.banner.sizes') || deepAccess(bid, 'mediaTypes.video.playerSize') || deepAccess(bid, 'sizes')
+  const sizes = deepAccess(bid, 'mediaTypes.banner.sizes') || deepAccess(bid, 'mediaTypes.video.playerSize') || deepAccess(bid, 'sizes')
 
   if (deepAccess(bid, 'mediaTypes.banner') || deepAccess(bid, 'mediaType') === 'banner' || (!deepAccess(bid, 'mediaTypes.video') && !deepAccess(bid, 'mediaType'))) {
     placement.banner = {'format': []}
@@ -105,11 +104,15 @@ function _buildBid (bid) {
 
   placement.ext = {'pid': bid.params.placementId}
 
+  if (bidderRequest.paapi?.enabled) {
+    placement.ext.ae = bid?.ortb2Imp?.ext?.ae
+  }
+
   return placement
 }
 
 function _buildResponse (bid, currency, ttl) {
-  let resp = {
+  const resp = {
     requestId: bid.impid,
     cpm: bid.price,
     width: bid.w,
@@ -144,23 +147,23 @@ export const spec = {
 
   isBidRequestValid: function (bid) {
     if (!deepAccess(bid, 'params.placementId')) {
-      logWarn('placementId param is reqeuired.')
+      logWarn('placementId param is required.')
       return false
     }
     if (deepAccess(bid, 'mediaTypes.banner.sizes')) {
-      let isValid = _validateSizes(bid.mediaTypes.banner.sizes, 'banner')
+      const isValid = _validateSizes(bid.mediaTypes.banner.sizes, 'banner')
       if (!isValid) {
         logWarn('Bid sizes are invalid.')
       }
       return isValid
     } else if (deepAccess(bid, 'mediaTypes.video.playerSize')) {
-      let isValid = _validateSizes(bid.mediaTypes.video.playerSize, 'video')
+      const isValid = _validateSizes(bid.mediaTypes.video.playerSize, 'video')
       if (!isValid) {
         logWarn('Bid sizes are invalid.')
       }
       return isValid
     } else if (deepAccess(bid, 'sizes')) {
-      let isValid = _validateSizes(bid.sizes, 'old')
+      const isValid = _validateSizes(bid.sizes, 'old')
       if (!isValid) {
         logWarn('Bid sizes are invalid.')
       }
@@ -173,11 +176,11 @@ export const spec = {
   buildRequests: function (validBidRequests, bidderRequest) {
     // check if validBidRequests is not empty
     if (validBidRequests.length > 0) {
-      let requestBody = {}
+      const requestBody = {}
       requestBody.imp = []
       requestBody.site = _getSiteObj(bidderRequest)
       requestBody.device = _getDeviceObj()
-      requestBody.id = bidderRequest.bids[0].auctionId
+      requestBody.id = bidderRequest.bidderRequestId;
       requestBody.ext = {'ce': (storage.cookiesAreEnabled() ? 1 : 0)}
 
       // Attaching GDPR Consent Params
@@ -196,7 +199,7 @@ export const spec = {
       }
 
       _each(validBidRequests, function (bid) {
-        requestBody.imp.push(_buildBid(bid))
+        requestBody.imp.push(_buildBid(bid, bidderRequest))
       })
       // Return the server request
       return {

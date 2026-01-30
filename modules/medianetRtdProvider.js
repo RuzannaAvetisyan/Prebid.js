@@ -2,7 +2,8 @@ import {isEmptyStr, isFn, isStr, logError, mergeDeep} from '../src/utils.js';
 import {loadExternalScript} from '../src/adloader.js';
 import {submodule} from '../src/hook.js';
 import {getGlobal} from '../src/prebidGlobal.js';
-import {includes} from '../src/polyfill.js';
+
+import { MODULE_TYPE_RTD } from '../src/activities/modules.js';
 
 const MODULE_NAME = 'medianet';
 const SOURCE = MODULE_NAME + 'rtd';
@@ -32,7 +33,7 @@ function init(config) {
 
 function getBidRequestData(requestBidsProps, callback, config, userConsent) {
   executeCommand(() => {
-    let adUnits = getAdUnits(requestBidsProps.adUnits, requestBidsProps.adUnitCodes);
+    const adUnits = getAdUnits(requestBidsProps.adUnits, requestBidsProps.adUnitCodes);
     const request = window.mnjs.onPrebidRequestBid({requestBidsProps, config, userConsent});
     if (!request) {
       callback();
@@ -59,14 +60,14 @@ function onAuctionInitEvent(auctionInit) {
   }, SOURCE));
 }
 
-function getTargetingData(adUnitCode) {
-  const adUnits = getAdUnits(undefined, adUnitCode);
+function getTargetingData(adUnitCodes, config, consent, auction) {
+  const adUnits = getAdUnits(auction.adUnits, adUnitCodes);
   let targetingData = {};
   if (window.mnjs.loaded && isFn(window.mnjs.getTargetingData)) {
-    targetingData = window.mnjs.getTargetingData(adUnitCode, adUnits, SOURCE) || {};
+    targetingData = window.mnjs.getTargetingData(adUnitCodes, adUnits, SOURCE) || {};
   }
   const targeting = {};
-  adUnitCode.forEach(adUnitCode => {
+  adUnitCodes.forEach(adUnitCode => {
     targeting[adUnitCode] = targeting[adUnitCode] || {};
     targetingData[adUnitCode] = targetingData[adUnitCode] || {};
     targeting[adUnitCode] = {
@@ -84,13 +85,13 @@ function executeCommand(command) {
 
 function loadRtdScript(customerId) {
   const url = getClientUrl(customerId, window.location.hostname);
-  loadExternalScript(url, MODULE_NAME)
+  loadExternalScript(url, MODULE_TYPE_RTD, MODULE_NAME)
 }
 
 function getAdUnits(adUnits, adUnitCodes) {
   adUnits = adUnits || getGlobal().adUnits || [];
   if (adUnitCodes && adUnitCodes.length) {
-    adUnits = adUnits.filter(unit => includes(adUnitCodes, unit.code));
+    adUnits = adUnits.filter(unit => adUnitCodes.includes(unit.code));
   }
   return adUnits;
 }

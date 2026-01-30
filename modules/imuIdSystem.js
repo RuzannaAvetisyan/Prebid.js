@@ -9,8 +9,17 @@ import { timestamp, logError } from '../src/utils.js';
 import { ajax } from '../src/ajax.js'
 import { submodule } from '../src/hook.js';
 import { getStorageManager } from '../src/storageManager.js';
+import { MODULE_TYPE_UID } from '../src/activities/modules.js';
+import { getRefererInfo } from '../src/refererDetection.js';
 
-export const storage = getStorageManager();
+/**
+ * @typedef {import('../modules/userId/index.js').Submodule} Submodule
+ * @typedef {import('../modules/userId/index.js').SubmoduleConfig} SubmoduleConfig
+ */
+
+const MODULE_NAME = 'imuid';
+
+export const storage = getStorageManager({moduleType: MODULE_TYPE_UID, moduleName: MODULE_NAME});
 
 export const storageKey = '__im_uid';
 export const storagePpKey = '__im_ppid';
@@ -49,10 +58,11 @@ export function getLocalData() {
 }
 
 export function getApiUrl(cid, url) {
-  if (url) {
-    return `${url}?cid=${cid}`;
-  }
-  return `https://${apiDomain}/${cid}/pid`;
+  const baseUrl = url ? `${url}?cid=${cid}&` : `https://${apiDomain}/${cid}/pid?`;
+  const refererInfo = getRefererInfo();
+  return baseUrl +
+    `page=${encodeURIComponent(refererInfo.page || '')}` +
+    `&ref=${encodeURIComponent(refererInfo.ref || '')}`;
 }
 
 export function apiSuccessProcess(jsonResponse) {
@@ -112,7 +122,7 @@ export const imuIdSubmodule = {
    * used to link submodule with config
    * @type {string}
    */
-  name: 'imuid',
+  name: MODULE_NAME,
   /**
    * decode the stored id value for passing to bid requests
    * @function
@@ -157,6 +167,17 @@ export const imuIdSubmodule = {
         imppid: localData.ppid
       }
     };
+  },
+  primaryIds: ['imppid', 'imuid'],
+  eids: {
+    'imppid': {
+      source: 'ppid.intimatemerger.com',
+      atype: 1
+    },
+    'imuid': {
+      source: 'intimatemerger.com',
+      atype: 1
+    },
   }
 };
 

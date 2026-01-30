@@ -1,10 +1,11 @@
-import {deepSetValue, mergeDeep} from '../../../src/utils.js';
+import {generateUUID, mergeDeep} from '../../../src/utils.js';
 import {bannerResponseProcessor, fillBannerImp} from './banner.js';
 import {fillVideoImp, fillVideoResponse} from './video.js';
 import {setResponseMediaType} from './mediaType.js';
 import {fillNativeImp, fillNativeResponse} from './native.js';
 import {BID_RESPONSE, IMP, REQUEST} from '../../../src/pbjsORTB.js';
-import {config} from '../../../src/config.js';
+import {clientSectionChecker} from '../../../src/fpd/oneClient.js';
+import { fillAudioImp, fillAudioResponse } from './audio.js';
 
 export const DEFAULT_PROCESSORS = {
   [REQUEST]: {
@@ -15,23 +16,22 @@ export const DEFAULT_PROCESSORS = {
         mergeDeep(ortbRequest, bidderRequest.ortb2)
       }
     },
-    // override FPD app, site, and device with getConfig('app'), etc if defined
-    // TODO: these should be deprecated for v8
-    appFpd: fpdFromTopLevelConfig('app'),
-    siteFpd: fpdFromTopLevelConfig('site'),
-    deviceFpd: fpdFromTopLevelConfig('device'),
+    onlyOneClient: {
+      // make sure only one of 'dooh', 'app', 'site' is set in request
+      priority: -99,
+      fn: clientSectionChecker('ORTB request')
+    },
     props: {
-      // sets request properties id, tmax, test, source.tid
+      // sets request properties id, tmax, test
       fn(ortbRequest, bidderRequest) {
         Object.assign(ortbRequest, {
-          id: ortbRequest.id || bidderRequest.auctionId,
+          id: ortbRequest.id || generateUUID(),
           test: ortbRequest.test || 0
         });
         const timeout = parseInt(bidderRequest.timeout, 10);
         if (!isNaN(timeout)) {
           ortbRequest.tmax = timeout;
         }
-        deepSetValue(ortbRequest, 'source.tid', ortbRequest.source?.tid || bidderRequest.auctionId);
       }
     }
   },
@@ -53,18 +53,10 @@ export const DEFAULT_PROCESSORS = {
       // populates imp.banner
       fn: fillBannerImp
     },
-    video: {
-      // populates imp.video
-      fn: fillVideoImp
-    },
-    pbadslot: {
-      // removes imp.ext.data.pbaslot if it's not a string
-      // TODO: is this needed?
-      fn(imp) {
-        const pbadslot = imp.ext?.data?.pbadslot;
-        if (!pbadslot || typeof pbadslot !== 'string') {
-          delete imp.ext?.data?.pbadslot;
-        }
+    secure: {
+      // should set imp.secure to 1 unless publisher has set it
+      fn(imp, bidRequest) {
+        imp.secure = imp.secure ?? 1;
       }
     }
   },
@@ -78,10 +70,6 @@ export const DEFAULT_PROCESSORS = {
       // sets banner response attributes if bidResponse.mediaType === BANNER
       fn: bannerResponseProcessor(),
     },
-    video: {
-      // sets video response attributes if bidResponse.mediaType === VIDEO
-      fn: fillVideoResponse
-    },
     props: {
       // sets base bidResponse properties common to all types of bids
       fn(bidResponse, bid, context) {
@@ -92,6 +80,8 @@ export const DEFAULT_PROCESSORS = {
           currency: context.ortbResponse.cur || context.currency,
           width: bid.w,
           height: bid.h,
+          wratio: bid.wratio,
+          hratio: bid.hratio,
           dealId: bid.dealid,
           creative_id: bid.crid,
           creativeId: bid.crid,
@@ -99,12 +89,27 @@ export const DEFAULT_PROCESSORS = {
           ttl: bid.exp || context.ttl,
           netRevenue: context.netRevenue,
         }).filter(([k, v]) => typeof v !== 'undefined')
-          .forEach(([k, v]) => bidResponse[k] = v);
+          .forEach(([k, v]) => {
+            bidResponse[k] = v;
+          });
         if (!bidResponse.meta) {
           bidResponse.meta = {};
         }
         if (bid.adomain) {
           bidResponse.meta.advertiserDomains = bid.adomain;
+        }
+        if (bid.ext?.dsa) {
+          bidResponse.meta.dsa = bid.ext.dsa;
+        }
+        if (bid.cat) {
+          bidResponse.meta.primaryCatId = bid.cat[0];
+          bidResponse.meta.secondaryCatIds = bid.cat.slice(1);
+        }
+        if (bid.attr) {
+          bidResponse.meta.attr = bid.attr;
+        }
+        if (bid.ext?.eventtrackers) {
+          bidResponse.eventtrackers = (bidResponse.eventtrackers ?? []).concat(bid.ext.eventtrackers);
         }
       }
     }
@@ -122,14 +127,24 @@ if (FEATURES.NATIVE) {
   }
 }
 
-function fpdFromTopLevelConfig(prop) {
-  return {
-    priority: 90, // after FPD from 'ortb2', before the rest
-    fn(ortbRequest) {
-      const data = config.getConfig(prop);
-      if (typeof data === 'object') {
-        ortbRequest[prop] = mergeDeep({}, ortbRequest[prop], data);
-      }
-    }
+if (FEATURES.VIDEO) {
+  DEFAULT_PROCESSORS[IMP].video = {
+    // populates imp.video
+    fn: fillVideoImp
+  }
+  DEFAULT_PROCESSORS[BID_RESPONSE].video = {
+    // sets video response attributes if bidResponse.mediaType === VIDEO
+    fn: fillVideoResponse
+  }
+}
+
+if (FEATURES.AUDIO) {
+  DEFAULT_PROCESSORS[IMP].audio = {
+    // populates imp.audio
+    fn: fillAudioImp
+  }
+  DEFAULT_PROCESSORS[BID_RESPONSE].audio = {
+    // sets video response attributes if bidResponse.mediaType === AUDIO
+    fn: fillAudioResponse
   }
 }
